@@ -1,0 +1,10 @@
+#!/bin/sh
+# Start the lid angle dashboard and open it.
+set -e
+DIR=$(cd "$(dirname "$0")" && pwd)
+PORT=${LIDANGLE_PORT:-8787}
+[ -x "$DIR/lidangle" ] || swiftc -O "$DIR/lidangle.swift" -o "$DIR/lidangle"
+LIDANGLE_PORT=$PORT python3 "$DIR/server.py" &
+sleep 1
+open "http://127.0.0.1:$PORT"
+wait

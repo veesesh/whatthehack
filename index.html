@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lid Angle</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;
+    --series-1-soft: rgba(42,120,214,0.14);
+    --series-2: #eb6834;
+    --series-2-soft: rgba(235,104,52,0.16);
+    --good: #0ca30c;
+    --critical: #d03b3b;
+    --chassis: #c3c2b7;
+    --chassis-edge: #898781;
+    --screen: #52514e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --series-1-soft: rgba(57,135,229,0.18);
+      --series-2: #d95926;
+      --series-2-soft: rgba(217,89,38,0.20);
+      --chassis: #4a4a47;
+      --chassis-edge: #6e6d68;
+      --screen: #111110;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-secondary); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .dot.off { background: var(--critical); }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .top { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 760px) { .top { grid-template-columns: 1fr; } }
+
+  .hero { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  .hero-value { font-size: 76px; font-weight: 600; line-height: 1; letter-spacing: -0.03em; }
+  .hero-value .deg { font-size: 34px; color: var(--text-secondary); font-weight: 400; margin-left: 2px; }
+  .hero-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; }
+  .posture { margin-top: 14px; font-size: 14px; color: var(--text-secondary); }
+
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+  .tile { border-top: 1px solid var(--grid); padding-top: 9px; }
+  .tile .v { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+  .tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+  .chart-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .chart-title { font-size: 13px; font-weight: 600; }
+  .chart-note { font-size: 12px; color: var(--muted); }
+  svg { display: block; width: 100%; overflow: visible; }
+  .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  #tooltip {
+    position: fixed; pointer-events: none; opacity: 0;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 10px; font-size: 12px; line-height: 1.45;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.13); transition: opacity .1s;
+  }
+  #tooltip .tv { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* ---- harmonium ---- */
+  .rowhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .controls { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+  button, select {
+    font: inherit; font-size: 13px; color: var(--text-primary);
+    background: var(--plane); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 12px; cursor: pointer;
+  }
+  button.on { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  label.chk { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+  input[type=range] { width: 90px; accent-color: var(--series-1); }
+
+  .keys { position: relative; display: flex; gap: 2px; margin: 4px 0 8px; }
+  .key {
+    flex: 1; text-align: center; padding: 13px 0 11px;
+    border-radius: 5px; background: var(--plane);
+    border: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  .key.on {
+    background: var(--series-1-soft); border-color: var(--series-1);
+    color: var(--text-primary); box-shadow: inset 0 -3px 0 var(--series-1);
+  }
+  #sargamPtr {
+    position: absolute; top: -9px; width: 0; height: 0; margin-left: -5px;
+    border-left: 5px solid transparent; border-right: 5px solid transparent;
+    border-top: 6px solid var(--text-secondary);
+    transition: left .08s linear;
+  }
+  .keyscale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+
+  .bellows { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
+  .bellows .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
+  .track { flex: 1; height: 9px; border-radius: 5px; background: var(--grid); overflow: hidden; }
+  #bellowsBar { height: 100%; width: 0%; border-radius: 5px; background: var(--series-2); transition: width .06s linear; }
+  #outBar { height: 100%; width: 0%; border-radius: 5px; background: var(--series-1); transition: width .06s linear; }
+  #bellowsVal, #outVal { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
+  #bellowsVal { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 12px; }
+
+  /* ---- backing track ---- */
+  .btrow { display: flex; gap: 8px; margin-bottom: 14px; }
+  #btUrl {
+    flex: 1; min-width: 0; font: inherit; font-size: 13px;
+    color: var(--text-primary); background: var(--plane);
+    border: 1px solid var(--border); border-radius: 7px; padding: 7px 11px;
+  }
+  #btUrl::placeholder { color: var(--muted); }
+  #btUrl:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+  .btbody { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  #ytplayer {
+    width: 340px; aspect-ratio: 16 / 9; flex: none;
+    border-radius: 8px; overflow: hidden; background: var(--plane);
+    border: 1px solid var(--border);
+  }
+  #ytplayer iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .btbody .hint { flex: 1; min-width: 240px; margin-top: 0; }
+  #btStatus.bad { color: var(--series-2); }
+  .banner {
+    display: none; margin-bottom: 16px; padding: 11px 14px; border-radius: 10px;
+    background: var(--series-1-soft); color: var(--text-primary); font-size: 13px;
+  }
+  .banner.show { display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Lid Angle</h1>
+    <span class="sub">MacBook Pro hinge, live from the HID sensor</span>
+    <span class="status"><span class="dot off" id="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="top">
+    <div class="card">
+      <svg id="hinge" viewBox="60 0 460 300" role="img" aria-label="Side view of the laptop at the current lid angle"></svg>
+    </div>
+    <div class="card hero">
+      <div class="hero-label">Current angle</div>
+      <div class="hero-value"><span id="now">—</span><span class="deg">°</span></div>
+      <div class="posture" id="posture">&nbsp;</div>
+      <div class="tiles">
+        <div class="tile"><div class="v" id="min">—</div><div class="k">Min</div></div>
+        <div class="tile"><div class="v" id="max">—</div><div class="k">Max</div></div>
+        <div class="tile"><div class="v" id="range">—</div><div class="k">Range</div></div>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="rowhead">
+      <span class="chart-title">Harmonium</span>
+      <span class="chart-note">playing <strong id="playingNote">&mdash;</strong> &middot; vowel <strong id="vowel">off</strong></span>
+      <div class="controls">
+        <button id="audioBtn">Play</button>
+        <select id="tonic" aria-label="Tonic"></select>
+        <select id="raga" aria-label="Raga">
+          <option value="bhupali">Bhupali</option>
+          <option value="yaman">Yaman</option>
+          <option value="bhairav">Bhairav</option>
+          <option value="kafi">Kafi</option>
+          <option value="darbari">Darbari</option>
+        </select>
+        <label class="chk"><input type="checkbox" id="droneChk" checked> Drone</label>
+        <label class="chk"><input type="checkbox" id="voiceChk"> Voice</label>
+        <select id="voiceLang" aria-label="Voice language"></select>
+        <select id="voiceSrc" aria-label="Voice source">
+          <option value="formant">Formant</option>
+          <option value="sampled">Sampled</option>
+        </select>
+        <label class="chk">Voice <input type="range" id="voiceVol" min="0" max="100" value="60"></label>
+        <label class="chk"><input type="checkbox" id="sustainChk"> Sustain</label>
+        <label class="chk">Vol <input type="range" id="vol" min="0" max="100" value="70"></label>
+      </div>
+    </div>
+    <div class="keys"><div id="sargam" style="display:flex;gap:2px;flex:1"></div><span id="sargamPtr"></span></div>
+    <div class="keyscale"><span>20&deg; closed</span><span>133&deg; open</span></div>
+    <div class="bellows">
+      <span class="k">Bellows</span>
+      <div class="track"><div id="bellowsBar"></div></div>
+      <span id="bellowsVal">0%</span>
+    </div>
+    <div class="bellows">
+      <span class="k">Output</span>
+      <div class="track"><div id="outBar"></div></div>
+      <span id="outVal">off</span>
+    </div>
+    <p class="hint">The lid picks the note; <strong>moving</strong> it pumps the bellows. With
+      <strong>Voice</strong> on, the lid is also a mouth &mdash; nearly shut sings a closed vowel
+      (<em>oo</em>), wide open sings an open one (<em>ah</em>), gliding through the vowel space between. Hold still and the air runs out in about two seconds &mdash; turn on Sustain to keep it open.</p>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="rowhead">
+      <span class="chart-title">Backing track</span>
+      <span class="chart-note" id="btStatus">&nbsp;</span>
+      <div class="controls">
+        <button id="btPlay">Play</button>
+        <label class="chk">Vol <input type="range" id="btVol" min="0" max="100" value="55"></label>
+        <label class="chk"><input type="checkbox" id="btDuck" checked> Duck under reeds</label>
+      </div>
+    </div>
+    <div class="btrow">
+      <input type="text" id="btUrl" spellcheck="false"
+             placeholder="Paste a YouTube link — a tanpura drone or a tabla loop works well">
+      <button id="btLoad">Load</button>
+    </div>
+    <div class="btbody">
+      <div id="ytplayer"></div>
+      <p class="hint">
+        The track plays in YouTube's own player, so it mixes with the reeds at the output
+        rather than running through them &mdash; volume and transport are all we can reach.
+        <strong>Duck under reeds</strong> drops the track as the bellows fill, so the harmonium
+        sits on top. Set <strong>Sa</strong> above to the track's key, or the two will clash.
+      </p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="chart-head">
+      <span class="chart-title">Angle over the last 60 seconds</span>
+      <span class="chart-note" id="chartnote">degrees</span>
+    </div>
+    <svg id="chart" style="height:240px"></svg>
+  </div>
+</div>
+<div id="tooltip" role="status" aria-live="polite"></div>
+
+<script src="voice.js"></script>
+<script src="harmonium.js"></script>
+<script src="backing.js"></script>
+<script>
+const SVG = "http://www.w3.org/2000/svg";
+const el = (t, a) => { const n = document.createElementNS(SVG, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
+
+/* ---------- state ---------- */
+const WINDOW_S = 60;
+const history = [];            // {t, angle}
+let stats = { min: null, max: null };
+let current = null;
+
+function posture(a) {
+  if (a <= 2)  return ["Closed", "lid shut against the chassis"];
+  if (a < 30)  return ["Barely open", "below the wake threshold on most Macs"];
+  if (a < 75)  return ["Cracked open", "too shallow to see the screen properly"];
+  if (a < 95)  return ["Upright", "screen near vertical"];
+  if (a < 120) return ["Typing range", "the angle most people work at"];
+  if (a < 135) return ["Leaned back", "toward the top of the hinge's travel"];
+  return ["Fully open", "at or near the hinge stop"];
+}
+
+/* ---------- hinge diagram ---------- */
+/* The hinge sits at the right; the base runs left toward the viewer and the lid
+   swings up and back, so the drawing matches how the machine looks from its side.
+   A lid point at angle t lands at (-L·cos t, -L·sin t), which is exactly an SVG
+   rotate(t) applied to a lid drawn along -x — so the transform is the raw angle. */
+// Sized so the lid tip stays inside the viewBox window (x 60..520, y 0..300) across the
+// whole travel: straight up the tip reaches y = HY - LID_L = 37, and even at a
+// hypothetical 180 degrees it only reaches x = HX + LID_L = 501.
+const HX = 306, HY = 232, BASE_L = 206, LID_L = 195, BASE_T = 16, LID_T = 11;
+const hinge = document.getElementById("hinge");
+
+function drawHinge(angle) {
+  hinge.textContent = "";
+  const a = angle == null ? 0 : angle;
+
+  // desk line
+  hinge.appendChild(el("line", { x1: HX - BASE_L - 14, y1: HY + BASE_T + 10, x2: HX + 40, y2: HY + BASE_T + 10,
+    stroke: "var(--grid)", "stroke-width": 2 }));
+
+  // angle arc, from the base direction round to the lid
+  const R = 74, rad = a * Math.PI / 180;
+  const p0 = [HX - R, HY], p1 = [HX - R * Math.cos(rad), HY - R * Math.sin(rad)];
+  // large-arc flag stays 0 below 180 degrees, which is the whole hinge travel
+  hinge.appendChild(el("path", {
+    d: `M ${p0[0]} ${p0[1]} A ${R} ${R} 0 ${a > 180 ? 1 : 0} 1 ${p1[0]} ${p1[1]}`,
+    fill: "none", stroke: "var(--series-1)", "stroke-width": 2, "stroke-linecap": "round",
+    opacity: 0.85
+  }));
+
+  // arc label
+  const mid = (a / 2) * Math.PI / 180, LR = R + 20;
+  const lbl = el("text", {
+    x: HX - LR * Math.cos(mid), y: HY - LR * Math.sin(mid),
+    "text-anchor": "middle", "dominant-baseline": "middle",
+    fill: "var(--series-1)", "font-size": 17, "font-weight": 600,
+    "font-family": "system-ui, -apple-system, sans-serif"
+  });
+  lbl.textContent = angle == null ? "—" : `${angle}°`;
+  hinge.appendChild(lbl);
+
+  // base
+  const base = el("g", { transform: `translate(${HX} ${HY})` });
+  base.appendChild(el("rect", { x: -BASE_L, y: 0, width: BASE_L, height: BASE_T, rx: 4,
+    fill: "var(--chassis)", stroke: "var(--chassis-edge)", "stroke-width": 1 }));
+  hinge.appendChild(base);
+
+  // lid, rotated by the live angle
+  const lid = el("g", { transform: `translate(${HX} ${HY}) rotate(${a})` });
+  lid.appendChild(el("rect", { x: -LID_L, y: -LID_T, width: LID_L, height: LID_T, rx: 3,
+    fill: "var(--chassis)", stroke: "var(--chassis-edge)", "stroke-width": 1 }));
+  lid.appendChild(el("rect", { x: -LID_L + 9, y: -LID_T + 2.5, width: LID_L - 16, height: LID_T - 5, rx: 1.5,
+    fill: "var(--screen)" }));
+  hinge.appendChild(lid);
+
+  // hinge pin, drawn last so it caps both slabs
+  hinge.appendChild(el("circle", { cx: HX, cy: HY, r: 5.5,
+    fill: "var(--surface-1)", stroke: "var(--chassis-edge)", "stroke-width": 2 }));
+}
+
+/* ---------- line chart ---------- */
+const chart = document.getElementById("chart");
+const H = 240, M = { t: 12, r: 14, b: 26, l: 42 };
+let W = 1000, PW = W - M.l - M.r;
+const PH = H - M.t - M.b;
+
+function sizeChart() {
+  W = Math.max(420, Math.round(chart.getBoundingClientRect().width));
+  PW = W - M.l - M.r;
+  chart.setAttribute("viewBox", `0 0 ${W} ${H}`);
+}
+let yMax = 140;
+const xAt = (dt) => M.l + (1 - dt / WINDOW_S) * PW;    // dt = seconds ago
+const yAt = (v) => M.t + PH - (v / yMax) * PH;
+
+function drawChart() {
+  sizeChart();
+  chart.textContent = "";
+  const now = Date.now() / 1000;
+  const pts = history.filter(d => now - d.t <= WINDOW_S);
+  yMax = Math.max(140, Math.ceil((stats.max ?? 0) / 20) * 20 + 20);
+
+  // gridlines + y ticks
+  const step = yMax > 180 ? 60 : 30;
+  for (let v = 0; v <= yMax; v += step) {
+    chart.appendChild(el("line", { x1: M.l, y1: yAt(v), x2: W - M.r, y2: yAt(v),
+      stroke: v === 0 ? "var(--baseline)" : "var(--grid)", "stroke-width": 1 }));
+    const tk = el("text", { x: M.l - 9, y: yAt(v) + 4, "text-anchor": "end", class: "tick" });
+    tk.textContent = v;
+    chart.appendChild(tk);
+  }
+  // x ticks
+  for (const s of [60, 45, 30, 15, 0]) {
+    const tk = el("text", { x: xAt(s), y: H - 6, "text-anchor": s === 0 ? "end" : "middle", class: "tick" });
+    tk.textContent = s === 0 ? "now" : `-${s}s`;
+    chart.appendChild(tk);
+  }
+
+  if (pts.length < 2) return;
+  const xy = pts.map(d => [xAt(now - d.t), yAt(d.angle)]);
+  const path = xy.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+
+  chart.appendChild(el("path", {
+    d: `${path} L ${xy[xy.length - 1][0].toFixed(1)} ${yAt(0)} L ${xy[0][0].toFixed(1)} ${yAt(0)} Z`,
+    fill: "var(--series-1-soft)", stroke: "none"
+  }));
+  chart.appendChild(el("path", { d: path, fill: "none", stroke: "var(--series-1)",
+    "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
+    "vector-effect": "non-scaling-stroke" }));
+
+  // leading dot, ringed in the surface so it stays legible over the line
+  const last = xy[xy.length - 1];
+  chart.appendChild(el("circle", { cx: last[0], cy: last[1], r: 5,
+    fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": 2 }));
+
+  if (hoverX !== null) drawHover(pts, now);
+}
+
+/* crosshair + tooltip */
+let hoverX = null;
+const tooltip = document.getElementById("tooltip");
+
+function drawHover(pts, now) {
+  const target = ((hoverX - M.l) / PW);
+  const secsAgo = (1 - target) * WINDOW_S;
+  let best = null, bestD = Infinity;
+  for (const d of pts) { const dd = Math.abs((now - d.t) - secsAgo); if (dd < bestD) { bestD = dd; best = d; } }
+  if (!best) return;
+  const x = xAt(now - best.t), y = yAt(best.angle);
+  chart.appendChild(el("line", { x1: x, y1: M.t, x2: x, y2: M.t + PH,
+    stroke: "var(--baseline)", "stroke-width": 1 }));
+  chart.appendChild(el("circle", { cx: x, cy: y, r: 5.5,
+    fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": 2 }));
+  tooltip.innerHTML = `<span class="tv">${best.angle}°</span><br>${(now - best.t).toFixed(1)}s ago`;
+}
+
+chart.addEventListener("pointermove", (e) => {
+  const r = chart.getBoundingClientRect();
+  hoverX = ((e.clientX - r.left) / r.width) * W;
+  tooltip.style.opacity = 1;
+  tooltip.style.left = Math.min(e.clientX + 14, innerWidth - 110) + "px";
+  tooltip.style.top = (e.clientY - 46) + "px";
+  drawChart();
+});
+chart.addEventListener("pointerleave", () => { hoverX = null; tooltip.style.opacity = 0; drawChart(); });
+
+/* ---------- live feed ---------- */
+const dot = document.getElementById("dot"), conn = document.getElementById("conn");
+const banner = document.getElementById("banner");
+let lastSeen = 0;
+
+function apply(angle, t) {
+  current = angle;
+  history.push({ t, angle });
+  const cutoff = t - WINDOW_S - 2;
+  while (history.length && history[0].t < cutoff) history.shift();
+  stats.min = stats.min === null ? angle : Math.min(stats.min, angle);
+  stats.max = stats.max === null ? angle : Math.max(stats.max, angle);
+
+  document.getElementById("now").textContent = angle;
+  document.getElementById("min").textContent = stats.min + "°";
+  document.getElementById("max").textContent = stats.max + "°";
+  document.getElementById("range").textContent = (stats.max - stats.min) + "°";
+  const [name, note] = posture(angle);
+  document.getElementById("posture").innerHTML = `<strong>${name}</strong> — ${note}`;
+  drawHinge(angle);
+  drawChart();
+  Harmonium.feed(angle);
+}
+
+function connect() {
+  const es = new EventSource("/stream");
+  es.onopen = () => { dot.classList.remove("off"); conn.textContent = "live"; };
+  es.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    lastSeen = Date.now();
+    if (d.error) {
+      banner.classList.add("show");
+      banner.textContent = "Sensor unavailable: " + d.error;
+      dot.classList.add("off"); conn.textContent = "no sensor";
+      return;
+    }
+    banner.classList.remove("show");
+    dot.classList.remove("off"); conn.textContent = "live";
+    if (d.angle !== null) apply(d.angle, d.t);
+  };
+  es.onerror = () => {
+    dot.classList.add("off"); conn.textContent = "reconnecting…";
+    es.close(); setTimeout(connect, 1500);
+  };
+}
+
+drawHinge(null);
+drawChart();
+Harmonium.init();
+Backing.init();
+connect();
+addEventListener("resize", drawChart);
+setInterval(drawChart, 250);   // keep the window scrolling even while the lid is still
+</script>
+</body>
+</html>

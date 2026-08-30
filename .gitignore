@@ -1,0 +1,10 @@
+# Compiled sensor reader — `./dashboard` builds it from lidangle.swift
+lidangle
+
+# Rendered vowel samples. These are generated locally by make-voices.py from the
+# macOS system voices, which are Apple's and licensed for use on the machine — not
+# ours to redistribute under this repo's MIT licence. Run make-voices.py to make them.
+voices/
+
+.DS_Store
+__pycache__/
