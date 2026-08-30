@@ -56,7 +56,11 @@ let subLo = 0, subHi = 0;   // uncalibrated tests run over this narrower slice
 let prevMag = null, floorEnergy = 0;
 let template = null;           // Float32Array, L2 normalised, or null when uncalibrated
 
-let charge = 0, lastTick = 0, locked = true;
+// Opt-in, not default. With the gate on and nothing squeezed yet, gate() returns 0 and
+// multiplies the entire instrument to silence — so a freshly opened dashboard made no
+// sound at all and gave no reason for it. The duck is a mode you switch on, not a wall
+// you have to discover.
+let charge = 0, lastTick = 0, locked = false;
 let armed = false, lastFire = 0, lastSim = 0, lastEnergy = 0, lastFlux = 0;
 let note = "", noteUntil = 0, hits = 0;
 
@@ -357,7 +361,7 @@ function say(msg) { if (msg) { note = msg; noteUntil = now() + 2.2; } }
 
 function status() {
   const t = now();
-  if (!locked) return "unlocked — playing for free";
+  if (!locked) return "gate off — tick Locked to make it earn it";
   if (calibrating) return note;
   // A fresh message outranks the idle states, so "turn the mic on first" is not
   // swallowed by the generic "mic off" it would otherwise fall through to.
@@ -447,6 +451,8 @@ function init() {
     locked = false;
     if (lock) { lock.checked = false; lock.disabled = true; }
   } else if (lock) {
+    // ?duck=1 arms the gate on load, for demoing it without a click.
+    if (new URLSearchParams(location.search).has("duck")) locked = true;
     lock.checked = locked;
     lock.addEventListener("change", (e) => { locked = e.target.checked; render(); });
   }

@@ -274,7 +274,7 @@
   <div class="card" style="margin-bottom:16px">
     <div class="rowhead">
       <span class="chart-title">Harmonium</span>
-      <span class="chart-note">playing <strong id="playingNote">&mdash;</strong> &middot; vowel <strong id="vowel">off</strong></span>
+      <span class="chart-note">playing <strong id="playingNote">&mdash;</strong> &middot; vowel <strong id="vowel">off</strong><span id="muteWhy"></span></span>
       <div class="controls">
         <button id="audioBtn">Play</button>
         <select id="tonic" aria-label="Tonic"></select>
@@ -322,7 +322,7 @@
         <button id="duckMic">Mic</button>
         <button id="duckCal">Teach it your duck</button>
         <button id="duckForget">Forget</button>
-        <label class="chk"><input type="checkbox" id="duckLock" checked> Locked</label>
+        <label class="chk"><input type="checkbox" id="duckLock"> Locked</label>
       </div>
     </div>
     <div class="bellows" style="margin-top:0">
@@ -624,6 +624,18 @@ function drawChain() {
 
   const lvl = Math.min(1, h.level * 3.2);
   set("chOut", h.running ? (lvl > 0.005 ? h.note || "—" : "silent") : "off");
+
+  // Silence has three different causes and they are not interchangeable. Name the one
+  // that is actually in effect, next to the transport where someone looking for sound
+  // is already looking.
+  const why = document.getElementById("muteWhy");
+  if (why) {
+    let msg = "";
+    if (!h.running) msg = " &middot; <b>press Play</b>";
+    else if (h.duck === 0) msg = " &middot; <b>muted by the duck gate</b> — squeeze it, or untick Locked";
+    else if (h.pressure < 0.02) msg = " &middot; <b>no air</b> — move the lid, or tick Sustain";
+    why.innerHTML = msg;
+  }
   bar("chOutBar", lvl);
   tone("lnkOut", h.running && lvl > 0.005, lvl > 0.3);
 }
