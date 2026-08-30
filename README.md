@@ -1,11 +1,76 @@
 # Weak Independent Harmonium
 
-A MacBook hinge that plays a harmonium, badly, and only while you squeeze a rubber duck.
+> **Every token costs you a breath.**
 
-It reads the real lid angle sensor and shows it on a live dashboard. The dashboard is
-also the instrument. A harmonium makes no sound on its own — one hand pumps a bellows
-for air while the other stops keys — so the lid does both jobs, and then refuses to do
-either without a duck. Neither strong nor independent.
+Built at [What the Hack!](https://wth.devfolio.co) — Bengaluru, 30 August 2026.
+[Submission](https://devfolio.co/projects/weak-independent-harmonium-e911) · by Vee Sesh.
+
+Your laptop lid is now a harmonium.
+
+## What it does
+
+This turns Claude Code into a tool that requires continuous physical engagement. It
+reads a MacBook's hinge-angle sensor and converts lid movement into musical notes while
+simultaneously controlling Claude's execution.
+
+The core mechanic: **Claude only runs while the lid is actively moving.** When movement
+stops, the supervisor sends `SIGSTOP` and Claude pauses mid-task — mid-token,
+mid-tool-call. Resuming lid movement sends `SIGCONT` and execution continues from
+exactly where it halted.
+
+The lid does two jobs at once, the way a harmonium player's two hands do. How far it is
+open picks the note, in sargam, across five ragas. *Moving* it pumps the bellows. The
+same air that makes the reeds sound is the air Claude is running on, so the note you
+hear is a live readout of how much longer the model has to live.
+
+## The problem it solves
+
+Claude Code normally runs autonomously once prompted — you can walk away and leave the
+MacBook untouched. This inverts that workflow. You must actively pump the lid like a
+bellows to sustain Claude's operation, which eliminates passive automation and
+introduces a humorous constraint: **productivity now requires exhaustion.**
+
+A harmonium already works this way and always has. It makes no sound on its own — one
+hand pumps air while the other stops keys — so the instrument is only ever as alive as
+the person operating it. Applying that to a language model is the entire idea.
+
+## Key challenges
+
+**Signal management.** Early iterations used a single movement threshold, so when the
+lid hovered at the boundary Claude received rapid `SIGSTOP`/`SIGCONT` cycles — dozens a
+second, which wedges the terminal rather than pausing it. Fixed with hysteresis:
+separate thresholds for pausing and resuming.
+
+**Process supervision.** If the supervisor died while Claude was stopped, the tree froze
+permanently — a suspended process is unkillable by ordinary means and the terminal never
+comes back. The supervisor now always sends `SIGCONT` before terminating, down every
+exit path including Ctrl-C. It also refuses to be stopped itself: sharing a process
+group with the child meant one Ctrl-Z stopped Claude *and* the only thing that could
+resume it. The child now gets its own process group and the terminal foreground.
+
+**Code quality.** A dead branch survived two reviews because the logic checked whether a
+template existed *before* the line that loads it, so the condition was never once true.
+
+**Browser autoplay.** Web Audio will not make a sound without a user gesture, so the
+dashboard launches its own browser window against a throwaway profile with the autoplay
+policy relaxed — which keeps that relaxation off the browser you actually use.
+
+**Audio processing.** Vowel formant ordering had to be corrected so the mouth opens
+monotonically with the lid, and pitch detection moved to YIN's cumulative mean
+normalised difference after plain autocorrelation kept reporting harmonics an octave up.
+
+## Quick start
+
+    ./bellows                     # sandboxed Claude, gated on the hinge, reeds playing
+    ./bellows --tau 2 --speak     # demo mode: freezes every few seconds, nags out loud
+    ./bellows --dry               # just the meter, no Claude
+    ./bellows --thaw              # resume anything a previous run left frozen
+
+Everything runs against a sandboxed `CLAUDE_CONFIG_DIR`, so it cannot touch the
+credentials, history or settings of the Claude you actually use. The first run will ask
+you to authenticate; that login is only for the sandbox.
+
+The rest of this file is how it works.
 
 ## The sensor
 
