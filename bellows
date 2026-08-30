@@ -338,6 +338,7 @@ class Meter:
             self.tty = open("/dev/tty", "w")
         except OSError:
             self.tty = None
+        self.painted = 0
         self.extra = None
         if extra_tty:
             try:
@@ -374,7 +375,86 @@ class Meter:
             except OSError:
                 pass
 
+    # ---- the frozen banner ----
+    #
+    # The title bar was the wrong place for this: most people never look at it and
+    # plenty of terminals do not show it at all. The right place is the screen, and the
+    # one moment the screen is safe to write on is precisely when Claude is frozen —
+    # SIGSTOP means it cannot repaint over us. So the banner exists only while stopped,
+    # and is wiped the instant the air comes back.
+
+    def paint(self, phrase, pressure, tier):
+        if not self.tty:
+            return
+        try:
+            cols, rows = shutil.get_terminal_size((80, 24))
+        except OSError:
+            cols, rows = 80, 24
+        cols = max(28, min(cols, 200))
+
+        colour, glyph = {
+            "frozen": ("\033[38;5;208m", "○"),   # amber
+            "still":  ("\033[38;5;203m", "◍"),   # coral
+            "dead":   ("\033[38;5;196m", "●"),   # red
+        }.get(tier, ("\033[38;5;208m", "○"))
+
+        pct = f"{pressure * 100:.0f}%"
+        bar_w = max(6, cols - 34)
+        filled = int(pressure * bar_w)
+        bar = "█" * filled + "░" * (bar_w - filled)
+
+        head = f" {glyph}  CLAUDE IS FROZEN   {pct:>4}  {bar} "
+        body = f" {phrase} "
+        # A given-up freeze gets shouted, because by then it has earned it.
+        if tier == "dead":
+            body = f" {phrase.upper()} "
+
+        top = "╭" + "─" * (cols - 2) + "╮"
+        bot = "╰" + "─" * (cols - 2) + "╯"
+        mid = lambda t: "│" + t.ljust(cols - 2)[: cols - 2] + "│"
+
+        lines = [top, mid(head), mid(body), bot]
+        out = ["\0337", "\033[?25l"]                      # save cursor, hide it
+        for i, ln in enumerate(lines):
+            row = rows - len(lines) + 1 + i
+            out.append(f"\033[{row};1H\033[2K{colour}\033[1m{ln}\033[0m")
+        out += ["\0338", "\033[?25h"]                     # restore cursor, show it
+        try:
+            self.tty.write("".join(out))
+            self.tty.flush()
+            self.painted = len(lines)
+        except OSError:
+            pass
+
+    def wipe(self):
+        """Clear the banner. Claude repaints its own footer soon after resuming."""
+        if not self.tty or not getattr(self, "painted", 0):
+            return
+        try:
+            cols, rows = shutil.get_terminal_size((80, 24))
+        except OSError:
+            rows = 24
+        out = ["\0337", "\033[?25l"]
+        for i in range(self.painted):
+            out.append(f"\033[{rows - self.painted + 1 + i};1H\033[2K")
+        out += ["\0338", "\033[?25h"]
+        try:
+            self.tty.write("".join(out))
+            self.tty.flush()
+        except OSError:
+            pass
+        self.painted = 0
+
+    def bell(self):
+        if self.tty:
+            try:
+                self.tty.write("\a")
+                self.tty.flush()
+            except OSError:
+                pass
+
     def close(self):
+        self.wipe()
         if self.tty:
             try:
                 self.tty.write("\033]0;\007")
@@ -393,6 +473,8 @@ def main():
     ap.add_argument("--dry", action="store_true", help="meter only, do not launch Claude")
     ap.add_argument("--no-sound", action="store_true", help="skip the dashboard and the reeds")
     ap.add_argument("--thaw", action="store_true", help="resume anything a previous run left frozen, then exit")
+    ap.add_argument("--speak", action="store_true", help="have the machine nag you out loud")
+    ap.add_argument("--quiet", action="store_true", help="no terminal bell on freeze")
     ap.add_argument("--port", type=int, default=int(os.environ.get("LIDANGLE_PORT", "8787")))
     ap.add_argument("-h", "--help", action="store_true")
     args, rest = ap.parse_known_args()
@@ -462,6 +544,12 @@ def main():
         # so that and SIGTTIN are ignored for the rest of this process's life.
         signal.signal(signal.SIGTTOU, signal.SIG_IGN)
         signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+
+        # This supervisor must never be stoppable. It is the only thing that can resume
+        # the child, so a SIGTSTP that lands here instead of on Claude strands the whole
+        # tree — which is the exact failure this file exists to avoid.
+        signal.signal(signal.SIGTSTP, signal.SIG_IGN)
+
         try:
             tty_fd = os.open("/dev/tty", os.O_RDWR)
         except OSError:
@@ -469,11 +557,17 @@ def main():
 
         proc = subprocess.Popen([claude] + rest, cwd=work, env=env, process_group=0)
 
+        # Hand over the terminal only if we actually hold it. Run as a background job
+        # (`./bellows &`) or under a non-interactive shell, seizing the foreground gets
+        # this process stopped by the shell's job control moments later.
         if tty_fd is not None:
             try:
-                os.tcsetpgrp(tty_fd, proc.pid)   # the child's pgid == its pid
+                if os.tcgetpgrp(tty_fd) == os.getpgrp():
+                    os.tcsetpgrp(tty_fd, proc.pid)   # the child's pgid == its pid
+                else:
+                    tty_fd = None                    # not ours to give back, either
             except OSError:
-                pass
+                tty_fd = None
 
         # ctrl-C now reaches only the foreground group, which is Claude's. Ignoring it
         # here as well is belt and braces: this process must outlive the child.
@@ -498,7 +592,10 @@ def main():
         meter.close()
 
     atexit.register(thaw)
+    # Both routed through a normal exit so the finally block thaws the child. A default
+    # SIGHUP would kill this process outright and leave Claude suspended.
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+    signal.signal(signal.SIGHUP, lambda *a: sys.exit(0))
 
     started = time.monotonic()
     last = time.monotonic()
@@ -508,7 +605,22 @@ def main():
     ROTATE = 2.6
     tier, tier_since, tier_idx = None, time.monotonic(), 0
     last_beat = 0.0
+    painted_phrase = None
+    speaker = None
     write_session(pressure=0.0, frozen=False, angle=None, dry=bool(args.dry))
+
+    def nag_aloud(text):
+        """One `say` at a time — overlapping voices turn nagging into noise."""
+        nonlocal speaker
+        if not args.speak:
+            return
+        if speaker and speaker.poll() is None:
+            return
+        try:
+            speaker = subprocess.Popen(["say", text],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
 
     try:
         while True:
@@ -557,6 +669,19 @@ def main():
                 word = lines[tier_idx % len(lines)]
 
             meter.update(pressure, not frozen, angle, err, word)
+
+            # The banner lives only while the child is stopped, which is exactly when
+            # the screen is safe to write on.
+            if frozen and grace_left <= 0:
+                if painted_phrase is None and not args.quiet:
+                    meter.bell()
+                if word != painted_phrase:
+                    meter.paint(word, pressure, tier or "frozen")
+                    nag_aloud(word)
+                    painted_phrase = word
+            elif painted_phrase is not None:
+                meter.wipe()
+                painted_phrase = None
 
             # Twice a second is plenty for the page and keeps this off the IO path.
             if now - last_beat > 0.5:

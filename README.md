@@ -281,9 +281,25 @@ surrounding editor — exactly the coupling this is meant to avoid — so `bello
 shell wrappers in favour of the real binary they delegate to, and strips the editor's
 session variables from the child's environment. `BELLOWS_CLAUDE` overrides the choice.
 
-Claude owns the screen, so status goes in the terminal *title* — an OSC escape, which
-terminals handle out of band and no full-screen program repaints over. `--meter /dev/ttys004`
-draws a proper bar in a second terminal instead.
+### Where the nagging shows up
+
+Claude owns the screen while it is running, so the live status goes in the terminal
+*title* — an OSC escape no full-screen program repaints over.
+
+The moment it freezes, though, the screen is fair game: SIGSTOP means Claude cannot
+repaint. So a banner is painted across the bottom of the terminal for exactly as long as
+the child is stopped, and wiped the instant air returns. It escalates — amber when you
+have just stopped, coral once the lid has been held still, red and shouting when you
+have plainly given up:
+
+    ╭──────────────────────────────────────────────────────────────╮
+    │ ●  CLAUDE IS FROZEN     0%  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │
+    │ COLD. LIMP. FINISHED.                                        │
+    ╰──────────────────────────────────────────────────────────────╯
+
+The terminal bell rings on the freeze itself (`--quiet` to stop that), and `--speak`
+routes the nagging through `say`, so the laptop complains out loud. `--meter /dev/ttys004`
+draws a proper bar in a second terminal.
 
 One honest limitation: only Claude's own process is suspended. Commands it has already
 spawned keep running to completion.
