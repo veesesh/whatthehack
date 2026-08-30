@@ -8,3 +8,6 @@ voices/
 
 .DS_Store
 __pycache__/
+
+# bellows: the sandboxed Claude's config, credentials and workspace
+sandbox/

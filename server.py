@@ -16,7 +16,11 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 READER = os.path.join(HERE, "lidangle")
+SESSION = os.path.join(HERE, "sandbox", "session.json")
 PORT = int(os.environ.get("LIDANGLE_PORT", "8787"))
+
+# A heartbeat older than this means the supervisor is gone, not merely quiet.
+SESSION_STALE = 3.0
 
 _state = {"angle": None, "t": 0.0, "error": None}
 _lock = threading.Lock()
@@ -50,11 +54,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=HERE, **kwargs)
 
     def do_GET(self):
+        if self.path.startswith("/session"):
+            return self.session()
         if self.path.startswith("/stream"):
             return self.stream()
         if self.path == "/":
             self.path = "/index.html"
         return super().do_GET()
+
+    def session(self):
+        """Whether a bellows supervisor is currently running.
+
+        The dashboard is otherwise happy to play for any lid movement at all, including
+        while you are working in the Claude you actually use. This is what lets the page
+        tell "the sandbox is running" apart from "someone left a tab open".
+        """
+        payload = {"live": False}
+        try:
+            with open(SESSION) as fh:
+                d = json.load(fh)
+            if time.time() - d.get("beat", 0) < SESSION_STALE:
+                d["live"] = True
+                payload = d
+        except (OSError, ValueError):
+            pass
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def stream(self):
         self.send_response(200)

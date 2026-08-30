@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lid Angle</title>
+<title>Weak Independent Harmonium</title>
 <style>
   :root {
     color-scheme: light;
@@ -66,6 +66,10 @@
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 20px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .card { box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
   }
   .top { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; margin-bottom: 16px; }
   @media (max-width: 760px) { .top { grid-template-columns: 1fr; } }
@@ -85,6 +89,9 @@
   .chart-title { font-size: 13px; font-weight: 600; }
   .chart-note { font-size: 12px; color: var(--muted); }
   svg { display: block; width: 100%; overflow: visible; }
+  /* The hinge drawing scales on its viewBox alone, so in a single column it grows to
+     650px of mostly empty card. Cap it and let it sit centred instead. */
+  #hinge { max-height: 260px; margin: 0 auto; }
   .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
   #tooltip {
@@ -137,6 +144,53 @@
   #bellowsVal { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 12px; }
 
+  /* ---- masthead ---- */
+  header { display: block; margin-bottom: 18px; }
+  .brand { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+  .brand h1 {
+    font-size: 30px; font-weight: 600; margin: 0; letter-spacing: -0.028em;
+    line-height: 1.05;
+  }
+  .brand .status { margin-left: auto; align-self: center; }
+  .tagline {
+    margin: 7px 0 0; font-size: 14px; color: var(--text-secondary);
+    max-width: 62ch; line-height: 1.5;
+  }
+  .tagline em { color: var(--series-2); font-style: normal; font-weight: 600; }
+  .kicker {
+    display: inline-block; margin-bottom: 9px; padding: 3px 9px;
+    border: 1px solid var(--border); border-radius: 999px;
+    font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--muted); background: var(--surface-1);
+  }
+
+  /* ---- signal chain ---- */
+  .chain { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); }
+  .chain .link { background: var(--surface-1); padding: 13px 15px; position: relative; }
+  .chain .link .n { font-size: 10px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+  .chain .link .v { font-size: 19px; font-weight: 600; letter-spacing: -0.015em; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .chain .link .m { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .chain .link .lvl { height: 3px; border-radius: 2px; background: var(--grid); margin-top: 9px; overflow: hidden; }
+  .chain .link .lvl i { display: block; height: 100%; width: 0%; border-radius: 2px; background: var(--series-1); transition: width .1s linear; }
+  .chain .link.dead .v { color: var(--muted); }
+  .chain .link.hot .v { color: var(--series-2); }
+  .chain .link.hot .lvl i { background: var(--series-2); }
+  @media (max-width: 700px) { .chain { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ---- duck ---- */
+  #duckBar { height: 100%; width: 0%; border-radius: 5px; background: var(--series-2); transition: width .1s linear; }
+  #duckVal { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
+  #duckStatus { font-size: 12px; color: var(--muted); }
+  #duckStatus.bad { color: var(--critical); }
+  #duckScope {
+    display: block; width: 100%; height: 90px; margin-top: 14px;
+    background: var(--plane); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .scopekey { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 5px; }
+  .scopekey .sw { display: inline-block; width: 9px; height: 2px; vertical-align: middle; margin-right: 4px; }
+  .sw.live { background: var(--series-1); }
+  .sw.tmpl { background: var(--series-2); }
+
   /* ---- backing track ---- */
   .btrow { display: flex; gap: 8px; margin-bottom: 14px; }
   #btUrl {
@@ -165,10 +219,38 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Lid Angle</h1>
-    <span class="sub">MacBook Pro hinge, live from the HID sensor</span>
-    <span class="status"><span class="dot off" id="dot"></span><span id="conn">connecting…</span></span>
+    <div class="brand">
+      <div>
+        <span class="kicker">Weak Independent Harmonium</span>
+        <h1>Claude Debellowsy</h1>
+      </div>
+      <span class="status"><span class="dot off" id="dot"></span><span id="conn">connecting…</span></span>
+    </div>
+    <p class="tagline">A MacBook hinge that plays raga and holds a language model hostage.
+      The lid is the bellows, a rubber duck is the key, and Claude runs only while you
+      keep pumping. <em>Every token costs you a breath.</em></p>
   </header>
+
+  <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
+    <div class="chain">
+      <div class="link" id="lnkLid">
+        <div class="n">1 · Hinge</div><div class="v" id="chLid">—</div>
+        <div class="m">HID sensor, 20 Hz</div><div class="lvl"><i id="chLidBar"></i></div>
+      </div>
+      <div class="link" id="lnkAir">
+        <div class="n">2 · Air</div><div class="v" id="chAir">0%</div>
+        <div class="m">travel, not position</div><div class="lvl"><i id="chAirBar"></i></div>
+      </div>
+      <div class="link" id="lnkDuck">
+        <div class="n">3 · Duck</div><div class="v" id="chDuck">locked</div>
+        <div class="m">squeak unlocks the reeds</div><div class="lvl"><i id="chDuckBar"></i></div>
+      </div>
+      <div class="link" id="lnkOut">
+        <div class="n">4 · Reeds</div><div class="v" id="chOut">silent</div>
+        <div class="m">C4–C6 free reed bank</div><div class="lvl"><i id="chOutBar"></i></div>
+      </div>
+    </div>
+  </div>
 
   <div class="banner" id="banner"></div>
 
@@ -232,6 +314,39 @@
       (<em>oo</em>), wide open sings an open one (<em>ah</em>), gliding through the vowel space between. Hold still and the air runs out in about two seconds &mdash; turn on Sustain to keep it open.</p>
   </div>
 
+    <div class="card" style="margin-bottom:16px">
+    <div class="rowhead">
+      <span class="chart-title">Duck</span>
+      <span class="chart-note" id="duckStatus">mic off</span>
+      <div class="controls">
+        <button id="duckMic">Mic</button>
+        <button id="duckCal">Teach it your duck</button>
+        <button id="duckForget">Forget</button>
+        <label class="chk"><input type="checkbox" id="duckLock" checked> Locked</label>
+      </div>
+    </div>
+    <div class="bellows" style="margin-top:0">
+      <span class="k">Charge</span>
+      <div class="track"><div id="duckBar"></div></div>
+      <span id="duckVal">0%</span>
+    </div>
+    <canvas id="duckScope"></canvas>
+    <div class="scopekey">
+      <span><span class="sw live"></span>live spectrum &nbsp; <span class="sw tmpl"></span>your duck</span>
+      <span>match <strong id="duckMatch">n/a</strong> &middot; squeaks <strong id="duckHits">0</strong></span>
+    </div>
+    <p class="hint">A rubber duck is a bellows with a free reed in it &mdash; the same
+      machine as a harmonium, one note wide. So the small one powers the big one: the
+      reeds stay silent until you squeeze, and the charge drains in about eight seconds,
+      which means playing a phrase takes a steady squeeze in one hand and the hinge in
+      the other. Press <strong>Teach it your duck</strong> and squeeze three times to
+      learn its spectrum &mdash; squeakers vary a lot by size, so it matches yours rather
+      than a guess, and remembers it. A squeak has to be loud, sudden <em>and</em> the
+      right shape to count, so a voice or a hum at the same pitch won't hold it open.
+      <strong>Wear headphones</strong>, or the mic hears the reeds and the thing starts
+      feeding itself. Untick <strong>Locked</strong> to play without a duck.</p>
+  </div>
+
   <div class="card" style="margin-bottom:16px">
     <div class="rowhead">
       <span class="chart-title">Backing track</span>
@@ -270,6 +385,7 @@
 <script src="voice.js"></script>
 <script src="harmonium.js"></script>
 <script src="backing.js"></script>
+<script src="duck.js"></script>
 <script>
 const SVG = "http://www.w3.org/2000/svg";
 const el = (t, a) => { const n = document.createElementNS(SVG, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
@@ -481,11 +597,107 @@ function connect() {
   };
 }
 
+/* The masthead strip is the whole architecture on one line: the sensor feeds air, air
+   and the duck gate the reeds. It is here because the thing is much easier to explain
+   in a screenshot than in a sentence. */
+function drawChain() {
+  const h = Harmonium.state(), d = Duck.state();
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const bar = (id, v) => { const e = document.getElementById(id); if (e) e.style.width = (v * 100).toFixed(1) + "%"; };
+  const tone = (id, on, hot) => {
+    const e = document.getElementById(id);
+    if (e) { e.classList.toggle("dead", !on); e.classList.toggle("hot", !!hot); }
+  };
+
+  set("chLid", h.angle === null ? "—" : h.angle + "°");
+  bar("chLidBar", h.angle === null ? 0 : Math.min(1, h.angle / 133));
+  tone("lnkLid", h.angle !== null);
+
+  set("chAir", Math.round(h.pressure * 100) + "%");
+  bar("chAirBar", h.pressure);
+  tone("lnkAir", h.pressure > 0.02, h.pressure > 0.5);
+
+  const locked = d.locked;
+  set("chDuck", !locked ? "open" : d.charge < 0.04 ? "locked" : Math.round(d.charge * 100) + "%");
+  bar("chDuckBar", locked ? d.charge : 1);
+  tone("lnkDuck", !locked || d.charge >= 0.04, d.charge > 0.5);
+
+  const lvl = Math.min(1, h.level * 3.2);
+  set("chOut", h.running ? (lvl > 0.005 ? h.note || "—" : "silent") : "off");
+  bar("chOutBar", lvl);
+  tone("lnkOut", h.running && lvl > 0.005, lvl > 0.3);
+}
+setInterval(drawChain, 100);
+
 drawHinge(null);
 drawChart();
 Harmonium.init();
+Duck.init();
 Backing.init();
 connect();
+
+/* Launched by ./bellows, where the lid is already the only input and doing double duty:
+   the same pump that keeps Claude alive plays the note. The duck would only get in the
+   way, so its gate comes off. */
+const qs = new URLSearchParams(location.search);
+
+/* Sustain pins the bellows open, so the reeds drone without the lid moving. The whole
+   point of the instrument is that they don't — but "is any of this making sound at all"
+   is a different question from "is my pumping working", and it deserves a way to be
+   answered on its own. */
+if (qs.has("sustain")) {
+  const sc = document.getElementById("sustainChk");
+  if (sc && !sc.checked) { sc.checked = true; sc.dispatchEvent(new Event("change")); }
+}
+
+/* Launched by ./bellows: the reeds belong to that sandbox session and nothing else.
+   Polling rather than pushing, because the interesting transition is the supervisor
+   *disappearing*, and a socket that has gone away looks identical to a quiet one. */
+if (qs.has("bellows")) {
+  let sessionLive = null;
+  setInterval(async () => {
+    let live = false;
+    try {
+      live = (await (await fetch("/session", { cache: "no-store" })).json()).live === true;
+    } catch (e) { live = false; }
+    if (live === sessionLive) return;
+    sessionLive = live;
+    if (live) {
+      banner.classList.remove("show");
+      Harmonium.start();
+    } else {
+      // No supervisor: go quiet rather than playing along to whatever the lid is doing
+      // for the Claude the user actually works in.
+      Harmonium.stop();
+      banner.classList.add("show");
+      banner.textContent = "No bellows session — the reeds only play for the sandbox. Run ./bellows";
+    }
+  }, 1000);
+}
+
+if (qs.has("bellows")) {
+  const lock = document.getElementById("duckLock");
+  if (lock && lock.checked) { lock.checked = false; lock.dispatchEvent(new Event("change")); }
+
+  // bellows launches a browser with the autoplay policy relaxed, so this usually just
+  // works. When it does not — a plain `open` fallback, or a browser that ignores the
+  // flag — the gesture requirement is real and the only honest answer is to ask for one.
+  // Resume the context up front so the autoplay gesture is spent while the page is
+  // fresh; the session poll above decides whether anything is actually audible.
+  Harmonium.start().then(() => {
+    if (Harmonium.state().ctxState !== "running") throw new Error("suspended");
+    Harmonium.stop();
+  }).catch(() => {
+    banner.classList.add("show");
+    banner.textContent = "Click anywhere to start the reeds — the browser wants a gesture first.";
+    const go = () => {
+      Harmonium.start();
+      banner.classList.remove("show");
+      removeEventListener("pointerdown", go);
+    };
+    addEventListener("pointerdown", go);
+  });
+}
 addEventListener("resize", drawChart);
 setInterval(drawChart, 250);   // keep the window scrolling even while the lid is still
 </script>

@@ -1,0 +1,591 @@
+#!/usr/bin/env python3
+"""bellows — Claude Code runs only while you pump the lid like a harmonium.
+
+A harmonium player's left hand never stops. The moment the bellows stop moving the reeds
+starve and the note dies, however many keys are held down. This does that to a language
+model: Claude runs while there is air, and the instant you stop pumping the lid it is
+sent SIGSTOP and freezes mid-token. Pump again and it picks up exactly where it was.
+
+The gate is a real process signal, not filtered input. The child is genuinely suspended
+by the kernel — it is not thinking, not spending tokens, not doing anything, and its
+terminal sits frozen mid-sentence until air arrives.
+
+Air behaves as it does in the instrument: it accumulates with lid *travel*, not lid
+position, and drains exponentially. Holding the lid wide open is not pumping. Only
+moving it counts.
+
+Everything runs against a sandboxed CLAUDE_CONFIG_DIR, so this cannot touch the
+credentials, history, or settings of the Claude you actually use.
+
+    ./bellows                       # sandboxed Claude, gated on the hinge
+    ./bellows --dry                 # just the meter, no Claude; for tuning
+    ./bellows -- --model sonnet     # anything after -- is passed to Claude
+"""
+
+import argparse
+import atexit
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+READER = os.path.join(HERE, "lidangle")
+SANDBOX = os.path.join(HERE, "sandbox")
+
+# Air per degree of travel, matching the instrument: a 12 degree pump fills the reservoir
+# from empty. Nothing here rewards holding the lid still at any angle.
+FILL_PER_DEG = 0.085
+
+# The instrument uses TAU 1.15, which starves a note in about two seconds. That is
+# correct for playing and unusable for typing, so the default here is slower — one good
+# pump buys roughly fifteen seconds of Claude. Tighten it for a demo, loosen it to get
+# anything done.
+DEFAULT_TAU = 6.0
+
+# Two thresholds, not one. A single threshold flaps: pressure hovers at the boundary and
+# the child is stopped and continued dozens of times a second, which wedges the terminal.
+# Claude resumes at ON and is not frozen again until pressure falls all the way to OFF.
+DEFAULT_ON = 0.25
+DEFAULT_OFF = 0.08
+
+# How long the lid has to sit perfectly still before the nagging escalates.
+STILL_SECONDS = 12.0
+
+# The instrument is a bellows, so every line here is literally about pumping one. That
+# they also read as something else is the entire joke, and the reason none of them say
+# anything you could not put on the side of a Victorian harmonium.
+PHRASES = {
+    # Pumping properly, reservoir full.
+    "good": [
+        "good. don't stop.",
+        "that's it.",
+        "keep that up.",
+        "yes. like that.",
+    ],
+    # Running, but the air is going and the lid has stopped.
+    "coasting": [
+        "keep blowing.",
+        "don't stop now.",
+        "you're coasting.",
+        "it won't pump itself.",
+        "harder.",
+    ],
+    # Running on fumes.
+    "fading": [
+        "going limp.",
+        "losing pressure. faster.",
+        "put your back into it.",
+        "you call that pumping?",
+        "in and out. that's the whole job.",
+    ],
+    # Frozen, but the lid is at least moving — nearly there.
+    "frozen": [
+        "you stopped. so did it.",
+        "no air, no Claude.",
+        "blow.",
+        "it's waiting on you.",
+    ],
+    # Frozen and the lid has not moved at all in a while.
+    "still": [
+        "wide open and doing nothing.",
+        "open is not the same as trying.",
+        "holding it there achieves nothing.",
+        "it needs movement, not commitment.",
+        "completely still. so is it.",
+    ],
+    # Given up entirely.
+    "dead": [
+        "you've given up.",
+        "cold. limp. finished.",
+        "not a twitch in a while now.",
+        "we can wait all day.",
+    ],
+}
+
+
+def phrase_for(pressure, frozen, still_for, on):
+    """Pick the complaint that fits, keyed on *why* it is unhappy rather than just how
+    empty it is — a lid held wide open and a lid being pumped badly are different
+    failures and deserve different abuse."""
+    if frozen:
+        if still_for > STILL_SECONDS * 2:
+            return "dead"
+        if still_for > STILL_SECONDS:
+            return "still"
+        return "frozen"
+    if pressure < on:
+        return "fading"
+    if still_for > 1.2:
+        return "coasting"
+    return "good"
+
+
+state = {"angle": None, "pressure": 0.0, "error": None, "alive": False, "last_move": 0.0}
+lock = threading.Lock()
+
+
+def reader_loop(stop_event):
+    """Own `lidangle --watch` and integrate travel into pressure.
+
+    The sensor opens non-exclusively, so this runs happily alongside the dashboard.
+    """
+    while not stop_event.is_set():
+        try:
+            proc = subprocess.Popen(
+                [READER, "--watch"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            last_angle = None
+            last_t = time.monotonic()
+            for line in proc.stdout:
+                if stop_event.is_set():
+                    break
+                try:
+                    angle = json.loads(line)["angle"]
+                except (ValueError, KeyError):
+                    continue
+                now = time.monotonic()
+                dt = min(0.5, now - last_t)
+                last_t = now
+                with lock:
+                    if last_angle is not None:
+                        moved = abs(angle - last_angle)
+                        if moved:
+                            state["pressure"] = min(
+                                1.0, state["pressure"] + moved * FILL_PER_DEG
+                            )
+                            state["last_move"] = now
+                    else:
+                        state["last_move"] = now
+                    state["angle"] = angle
+                    state["alive"] = True
+                    state["error"] = None
+                last_angle = angle
+            proc.kill()
+        except OSError as exc:
+            with lock:
+                state["error"] = str(exc)
+        # The sensor vanishes across sleep/wake. Fail open rather than leaving Claude
+        # frozen forever with no way to feed it.
+        with lock:
+            state["alive"] = False
+            if state["error"] is None:
+                state["error"] = "sensor reader exited"
+        if stop_event.wait(2):
+            return
+
+
+# Chromium-based browsers all take the same flags. Order is preference, not likelihood.
+BROWSERS = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+]
+
+
+SESSION = os.path.join(SANDBOX, "session.json")
+
+
+def write_session(**fields):
+    """Publish what this supervisor is doing, for the dashboard to read.
+
+    Without this the reeds play for *any* lid movement, including while you are using
+    the Claude you actually work in — the instrument has no idea the sandbox is not
+    running. The page treats a stale heartbeat as "no session" and goes quiet.
+    """
+    try:
+        tmp = SESSION + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(dict(pid=os.getpid(), beat=time.time(), **fields), fh)
+        os.replace(tmp, SESSION)   # atomic, so the page never reads a half-written file
+    except OSError:
+        pass
+
+
+def clear_session():
+    try:
+        os.remove(SESSION)
+    except OSError:
+        pass
+
+
+def thaw_strays():
+    """Resume anything a previous run left suspended.
+
+    A supervisor killed with SIGKILL — or stopped itself, back when it shared a process
+    group with its child — cannot run its own cleanup, and leaves a frozen tree behind.
+    """
+    found = 0
+    out = subprocess.run(["ps", "-A", "-o", "pid=,stat=,command="],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, stat, cmd = parts
+        if "T" not in stat:
+            continue
+        if not any(k in cmd for k in ("bellows", "lidangle --watch")) and \
+           not (cmd.startswith(os.path.expanduser("~/.local/bin/claude")) or "/claude" in cmd.split()[0]):
+            continue
+        # Never touch a Claude that is not ours: the sandboxed one has no cmux session
+        # plumbing on its command line.
+        if "--session-id" in cmd or "CMUX" in cmd:
+            continue
+        try:
+            os.kill(int(pid), signal.SIGCONT)
+            print(f"  thawed {pid}  {cmd[:70]}")
+            found += 1
+        except OSError:
+            pass
+    print(f"thawed {found} stranded process(es)" if found else "nothing was stranded")
+    return found
+
+
+def port_open(port):
+    import socket
+    with socket.socket() as sk:
+        sk.settimeout(0.3)
+        return sk.connect_ex(("127.0.0.1", port)) == 0
+
+
+def start_sound(port, sandbox):
+    """Bring up the dashboard and put it on screen, playing.
+
+    The point is that one pump does two jobs: the reeds and Claude read the same sensor
+    independently, so the note you hear *is* the air Claude is running on. The harmonium
+    drains in about two seconds against the supervisor's fifteen, which makes the sound
+    dying the early warning and Claude freezing the consequence.
+
+    Returns (server_proc, browser_proc); either may be None.
+    """
+    server = None
+    if not port_open(port):
+        env = dict(os.environ, LIDANGLE_PORT=str(port))
+        server = subprocess.Popen(
+            [sys.executable, os.path.join(HERE, "server.py")],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        for _ in range(40):
+            if port_open(port):
+                break
+            time.sleep(0.1)
+
+    url = f"http://127.0.0.1:{port}/?bellows=1"
+    browser = None
+    for exe in BROWSERS:
+        if not os.path.exists(exe):
+            continue
+        # A throwaway profile, so relaxing the autoplay policy applies to this window
+        # and never to the browser the user actually reads mail in.
+        profile = os.path.join(sandbox, "browser")
+        os.makedirs(profile, exist_ok=True)
+        browser = subprocess.Popen(
+            [exe, f"--user-data-dir={profile}",
+             "--autoplay-policy=no-user-gesture-required",
+             "--no-first-run", "--no-default-browser-check",
+             "--window-size=560,760", f"--app={url}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        break
+    else:
+        # No Chromium to hand: the default browser will need one click.
+        subprocess.Popen(["open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return server, browser
+
+
+def find_claude():
+    """The real binary, not a wrapper.
+
+    `claude` on PATH may be a launcher that injects hooks and a session id into the
+    surrounding editor — exactly the coupling this is supposed to avoid — so wrappers
+    are skipped in favour of the executable they delegate to.
+    """
+    override = os.environ.get("BELLOWS_CLAUDE")
+    if override:
+        return override
+    skip = os.path.realpath("/Applications/cmux.app/Contents/Resources/bin")
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d or os.path.realpath(d) == skip:
+            continue
+        cand = os.path.join(d, "claude")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            with open(cand, "rb") as fh:
+                if fh.read(2) == b"#!":     # a script wrapper; keep looking
+                    continue
+            return cand
+    fallback = os.path.expanduser("~/.local/bin/claude")
+    return fallback if os.path.exists(fallback) else shutil.which("claude")
+
+
+class Meter:
+    """Status in the terminal title.
+
+    Claude owns the screen, so a status line printed to stdout would be trampled by the
+    next redraw. The title is written with an OSC escape, which terminals handle out of
+    band and no full-screen program repaints over.
+    """
+
+    BLOCKS = " ▁▂▃▄▅▆▇█"
+
+    def __init__(self, extra_tty=None):
+        try:
+            self.tty = open("/dev/tty", "w")
+        except OSError:
+            self.tty = None
+        self.extra = None
+        if extra_tty:
+            try:
+                self.extra = open(extra_tty, "w")
+            except OSError:
+                self.extra = None
+
+    def bar(self, p, width=16):
+        filled = p * width
+        out = ""
+        for i in range(width):
+            level = min(1.0, max(0.0, filled - i))
+            out += self.BLOCKS[int(level * (len(self.BLOCKS) - 1))]
+        return out
+
+    def update(self, pressure, running, angle, err, word):
+        mark = "◉" if running else "○"
+        if err:
+            word = "no sensor — running free"
+        title = f"{mark} {pressure * 100:3.0f}% {word}"
+        if self.tty:
+            try:
+                self.tty.write(f"\033]0;{title}\007")
+                self.tty.flush()
+            except OSError:
+                pass
+        if self.extra:
+            deg = f"{angle:3d}°" if angle is not None else "  —"
+            try:
+                self.extra.write(
+                    f"\r\033[2K{mark} {self.bar(pressure)} {pressure * 100:3.0f}%  {deg}  {word}"
+                )
+                self.extra.flush()
+            except OSError:
+                pass
+
+    def close(self):
+        if self.tty:
+            try:
+                self.tty.write("\033]0;\007")
+                self.tty.flush()
+            except OSError:
+                pass
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--tau", type=float, default=float(os.environ.get("BELLOWS_TAU", DEFAULT_TAU)))
+    ap.add_argument("--on", type=float, default=float(os.environ.get("BELLOWS_ON", DEFAULT_ON)))
+    ap.add_argument("--off", type=float, default=float(os.environ.get("BELLOWS_OFF", DEFAULT_OFF)))
+    ap.add_argument("--grace", type=float, default=8.0, help="seconds before gating starts")
+    ap.add_argument("--meter", default=os.environ.get("BELLOWS_METER"), help="tty for a full meter")
+    ap.add_argument("--dry", action="store_true", help="meter only, do not launch Claude")
+    ap.add_argument("--no-sound", action="store_true", help="skip the dashboard and the reeds")
+    ap.add_argument("--thaw", action="store_true", help="resume anything a previous run left frozen, then exit")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("LIDANGLE_PORT", "8787")))
+    ap.add_argument("-h", "--help", action="store_true")
+    args, rest = ap.parse_known_args()
+    if args.help:
+        print(__doc__)
+        return 0
+    if args.thaw:
+        return 0 if thaw_strays() >= 0 else 1
+    if rest and rest[0] == "--":
+        rest = rest[1:]
+
+    if not os.path.exists(READER):
+        print("building lidangle…", file=sys.stderr)
+        subprocess.run(["swiftc", "-O", os.path.join(HERE, "lidangle.swift"), "-o", READER], check=True)
+
+    stop_event = threading.Event()
+    threading.Thread(target=reader_loop, args=(stop_event,), daemon=True).start()
+
+    # Nothing owns the screen in dry mode, so draw the real bar inline rather than
+    # hiding the only feedback in the title.
+    if args.dry and not args.meter:
+        args.meter = "/dev/tty"
+
+    server = browser = None
+    if not args.no_sound:
+        server, browser = start_sound(args.port, SANDBOX)
+        print(f"bellows: reeds on http://127.0.0.1:{args.port}/")
+
+    meter = Meter(args.meter)
+    proc = None
+    tty_fd = None
+
+    if not args.dry:
+        claude = find_claude()
+        if not claude:
+            print("bellows: could not find the claude binary", file=sys.stderr)
+            return 1
+        config = os.path.join(SANDBOX, "config")
+        work = os.path.join(SANDBOX, "workspace")
+        os.makedirs(config, exist_ok=True)
+        os.makedirs(work, exist_ok=True)
+
+        env = dict(os.environ)
+        env["CLAUDE_CONFIG_DIR"] = config
+        # Drop the editor's session plumbing so the sandbox cannot report into it.
+        for k in ("CMUX_SURFACE_ID", "CMUX_SOCKET_PATH", "CMUX_CUSTOM_CLAUDE_PATH"):
+            env.pop(k, None)
+        env["BELLOWS"] = "1"
+
+        print(f"bellows: {claude}")
+        print(f"         config  {config}")
+        print(f"         cwd     {work}")
+        print(f"         tau {args.tau}s · resume at {args.on:.0%} · freeze below {args.off:.0%}")
+        print("         pump the lid to keep it running. ctrl-c to quit.\n")
+        time.sleep(1.2)
+
+        # The child gets its OWN process group, in the same session so it keeps the
+        # controlling terminal, and is then handed the terminal foreground the way a
+        # shell hands it to a job.
+        #
+        # This is not a detail. Sharing a process group means every job-control signal
+        # aimed at the child hits this supervisor too — a single ctrl-Z stops Claude AND
+        # the process responsible for resuming it, stranding a suspended tree that no
+        # longer has anything watching it. Ask how I know.
+        #
+        # Being in a background group means writing to the terminal would raise SIGTTOU,
+        # so that and SIGTTIN are ignored for the rest of this process's life.
+        signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+        try:
+            tty_fd = os.open("/dev/tty", os.O_RDWR)
+        except OSError:
+            tty_fd = None
+
+        proc = subprocess.Popen([claude] + rest, cwd=work, env=env, process_group=0)
+
+        if tty_fd is not None:
+            try:
+                os.tcsetpgrp(tty_fd, proc.pid)   # the child's pgid == its pid
+            except OSError:
+                pass
+
+        # ctrl-C now reaches only the foreground group, which is Claude's. Ignoring it
+        # here as well is belt and braces: this process must outlive the child.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    frozen = False
+
+    def thaw():
+        """Never exit leaving a stopped process behind — it would be unkillable by
+        ordinary means and the terminal would never come back."""
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGCONT)
+            except OSError:
+                pass
+        if tty_fd is not None:
+            try:
+                os.tcsetpgrp(tty_fd, os.getpgrp())   # take the terminal back
+            except OSError:
+                pass
+        clear_session()
+        meter.close()
+
+    atexit.register(thaw)
+    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+
+    started = time.monotonic()
+    last = time.monotonic()
+
+    # A tier holds for a couple of seconds before moving to the next line in it, which
+    # is long enough to read and short enough to feel like being nagged.
+    ROTATE = 2.6
+    tier, tier_since, tier_idx = None, time.monotonic(), 0
+    last_beat = 0.0
+    write_session(pressure=0.0, frozen=False, angle=None, dry=bool(args.dry))
+
+    try:
+        while True:
+            if proc and proc.poll() is not None:
+                break
+            now = time.monotonic()
+            dt = now - last
+            last = now
+
+            with lock:
+                state["pressure"] *= pow(2.718281828, -dt / args.tau)
+                pressure = state["pressure"]
+                angle = state["angle"]
+                err = None if state["alive"] else state["error"]
+                last_move = state["last_move"]
+
+            still_for = (now - last_move) if last_move else 0.0
+
+            grace = now - started < args.grace
+            # No sensor means no way to earn air, so an outage must not lock Claude out.
+            want_frozen = (not grace) and (err is None) and (
+                pressure < args.off if not frozen else pressure < args.on
+            )
+
+            if proc and want_frozen != frozen:
+                try:
+                    # The whole group, so a command Claude already started freezes with
+                    # it instead of running on underneath a suspended parent.
+                    os.killpg(proc.pid, signal.SIGSTOP if want_frozen else signal.SIGCONT)
+                    frozen = want_frozen
+                except OSError:
+                    break
+            elif not proc:
+                frozen = want_frozen
+
+            grace_left = args.grace - (now - started)
+            if grace_left > 0:
+                word = f"warming up… {grace_left:.0f}s"
+            else:
+                t = phrase_for(pressure, frozen, still_for, args.on)
+                if t != tier:
+                    tier, tier_since, tier_idx = t, now, 0
+                elif now - tier_since > ROTATE:
+                    tier_since, tier_idx = now, tier_idx + 1
+                lines = PHRASES[tier]
+                word = lines[tier_idx % len(lines)]
+
+            meter.update(pressure, not frozen, angle, err, word)
+
+            # Twice a second is plenty for the page and keeps this off the IO path.
+            if now - last_beat > 0.5:
+                last_beat = now
+                write_session(pressure=round(pressure, 4), frozen=frozen,
+                              angle=angle, dry=bool(args.dry))
+
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+        thaw()
+        for child in (browser, server):
+            if child and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    return proc.returncode if proc else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

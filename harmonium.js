@@ -197,20 +197,25 @@ function tick(t) {
     }
   }
 
+  // Air is only half of it: duck.js gates the output on the rubber duck having been
+  // squeezed, and returns 1 when that module is absent or its lock is off.
+  const duck = window.Duck ? Duck.gate() : 1;
+  const gain = volume * duck;
+
   if (running) {
     const p = pressure, when = ctx.currentTime;
-    melodyGain.gain.setTargetAtTime(Math.pow(p, 1.3) * 0.42 * volume, when, 0.05);
-    droneGain.gain.setTargetAtTime((droneOn ? Math.pow(p, 0.9) * 0.2 : 0) * volume, when, 0.08);
-    airGain.gain.setTargetAtTime(p * 0.014 * volume, when, 0.05);
+    melodyGain.gain.setTargetAtTime(Math.pow(p, 1.3) * 0.42 * gain, when, 0.05);
+    droneGain.gain.setTargetAtTime((droneOn ? Math.pow(p, 0.9) * 0.2 : 0) * gain, when, 0.08);
+    airGain.gain.setTargetAtTime(p * 0.014 * gain, when, 0.05);
     for (const f of filters) f.frequency.setTargetAtTime(650 + p * 2600, when, 0.06);
   }
   if (window.Voice) {
-    Voice.setLevel(running ? pressure : 0);
+    Voice.setLevel(running ? pressure * duck : 0);
     if (currentAngle !== null) {
       Voice.setAperture((currentAngle - A_MIN) / (A_MAX - A_MIN));
     }
   }
-  if (window.Backing) Backing.duck(running ? pressure : 0);
+  if (window.Backing) Backing.duck(running ? pressure * duck : 0);
   render();
 }
 
@@ -356,6 +361,7 @@ window.Harmonium = {
     note: currentIdx >= 0 ? notes[currentIdx].name : null,
     freq: currentIdx >= 0 ? notes[currentIdx].freq : null,
     ctxState: ctx ? ctx.state : "none",
+    duck: window.Duck ? Duck.gate() : 1,
     level: outputLevel(),
   }),
 };
